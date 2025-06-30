@@ -32,19 +32,44 @@ double cross_product(const cv::Point& p1, const cv::Point& p2, const cv::Point& 
     return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
 }
 
+void visualize_step(const cv::Mat& baseImage,
+                    const std::vector<cv::Point>& path,
+                    const cv::Point& apex,
+                    const cv::Point& left_tentacle_tip,
+                    const cv::Point& right_tentacle_tip,
+                    const cv::Point& point_being_tested,
+                    const std::string& message) {
+
+    cv::Mat frame = baseImage.clone();
+
+    // Draw the funnel tentacles
+    cv::line(frame, apex, left_tentacle_tip, cv::Scalar(0, 255, 255), 1, cv::LINE_AA); // Yellow
+    cv::line(frame, apex, right_tentacle_tip, cv::Scalar(0, 255, 255), 1, cv::LINE_AA); // Yellow
+
+    // Draw the line being tested
+    cv::line(frame, apex, point_being_tested, cv::Scalar(255, 0, 255), 2, cv::LINE_AA); // Magenta
+
+    // Draw the path
+    for (size_t i = 0; i < path.size() - 1; ++i) {
+        cv::line(frame, path[i], path[i+1], cv::Scalar(0, 255, 0), 2, cv::LINE_AA); // Green
+    }
+    cv::putText(frame, message, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+
+    cv::imshow("Funnel Algorithm Visualization", frame);
+    cv::waitKey(500);
+}
+
 int main() {
     std::cout << "Initializing project..." << std::endl;
     std::cout << "OpenCV version: " << CV_VERSION << std::endl;
 
-    // Initialize a context handle for thread safety.
     initGEOS(nullptr, nullptr);
     const char* geos_version = GEOSversion();
     std::cout << "GEOS version: " << geos_version << std::endl;
-
     std::cout << "\nSuccessfully linked GEOS and OpenCV!" << std::endl;
     
     // --- JSON Reading Section ---
-    std::string jsonFilePath = "../data.json"; // Path to your JSON file relative to the executable's location
+    std::string jsonFilePath = "../data.json";
     std::ifstream inputFile(jsonFilePath);
 
     if (!inputFile.is_open()) {
@@ -56,249 +81,189 @@ int main() {
     std::vector<DataPoint> dataPoints;
     try {
         json j;
-        inputFile >> j; // Parse JSON directly from the input file stream
-
-        // Convert the JSON array to a vector of DataPoint objects
+        inputFile >> j;
         dataPoints = j.get<std::vector<DataPoint>>();
-
-        std::cout << "\n--- Parsed JSON Data ---" << std::endl;
-        for (const auto& point : dataPoints) {
-            std::cout << "Label: " << point.label
-                      << ", X: " << point.x
-                      << ", Y: " << point.y << std::endl;
-        }
-        std::cout << "------------------------" << std::endl;
-
-    } catch (const json::parse_error& e) {
-        std::cerr << "JSON parse error: " << e.what() << " at byte " << e.byte << std::endl;
-        finishGEOS();
-        return 1;
     } catch (const json::exception& e) {
         std::cerr << "JSON error: " << e.what() << std::endl;
         finishGEOS();
         return 1;
     }
-
     inputFile.close();
 
-    cv::Mat image = cv::Mat::zeros(400, 600, CV_8UC3); // Black image: Height 400, Width 600, 3 channels (BGR)
-
+    // --- Image Plotting Setup ---
+    cv::Mat image = cv::Mat::zeros(600, 800, CV_8UC3);
     if (dataPoints.empty()) {
         std::cout << "No data points to plot" << std::endl;
-        cv::putText(image, "No data points to plot!", cv::Point(100, 200), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
-    } else {
-        // 1. Find Data Extents (min/max X, Y)
-        double minX = std::numeric_limits<double>::max();
-        double maxX = std::numeric_limits<double>::lowest();
-        double minY = std::numeric_limits<double>::max();
-        double maxY = std::numeric_limits<double>::lowest();
+        finishGEOS();
+        return 1;
+    }
 
-        for (const auto& point : dataPoints) {
-            minX = std::min(minX, point.x);
-            maxX = std::max(maxX, point.x);
-            minY = std::min(minY, point.y);
-            maxY = std::max(maxY, point.y);
+    double minX = std::numeric_limits<double>::max();
+    double maxX = std::numeric_limits<double>::lowest();
+    double minY = std::numeric_limits<double>::max();
+    double maxY = std::numeric_limits<double>::lowest();
+    for (const auto& point : dataPoints) {
+        minX = std::min(minX, point.x);
+        maxX = std::max(maxX, point.x);
+        minY = std::min(minY, point.y);
+        maxY = std::max(maxY, point.y);
+    }
+
+    double dataRangeX = maxX - minX;
+    double dataRangeY = maxY - minY;
+    if (dataRangeX == 0) dataRangeX = 2.0;
+    if (dataRangeY == 0) dataRangeY = 2.0;
+    int border = 50;
+    int plotWidth = image.cols - 2 * border;
+    int plotHeight = image.rows - 2 * border;
+    double scale = std::min(static_cast<double>(plotWidth) / dataRangeX, static_cast<double>(plotHeight) / dataRangeY);
+    double scaledDataWidth = dataRangeX * scale;
+    double scaledDataHeight = dataRangeY * scale;
+    double offsetX = border + (plotWidth - scaledDataWidth) / 2.0;
+    double offsetY = border + (plotHeight - scaledDataHeight) / 2.0;
+
+    std::vector<cv::Point> leftPixelPoints;
+    std::vector<cv::Point> rightPixelPoints;
+    
+    // Sort datapoints to ensure FROM is first and TO is last for correct processing.
+    std::sort(dataPoints.begin(), dataPoints.end(), [](const DataPoint& a, const DataPoint& b) {
+        if (a.label == "FROM") return true;
+        if (b.label == "FROM") return false;
+        if (a.label == "TO") return false;
+        if (b.label == "TO") return true;
+        return a.label < b.label;
+    });
+
+    DataPoint fromPoint, toPoint;
+    std::vector<std::pair<DataPoint, DataPoint>> gateways;
+
+    for(const auto& p : dataPoints) {
+        if(p.label == "FROM") fromPoint = p;
+        else if (p.label == "TO") toPoint = p;
+        else {
+            if (gateways.empty() || gateways.back().second.label != "") {
+                gateways.push_back({p, {"", 0, 0}});
+            } else {
+                gateways.back().second = p;
+            }
         }
+    }
+    
+    // Create the left and right chains for the funnel algorithm
+    auto map_to_pixel = [&](const DataPoint& p) {
+        int px = static_cast<int>(offsetX + (p.x - minX) * scale);
+        int py = static_cast<int>(offsetY + scaledDataHeight - (p.y - minY) * scale);
+        return cv::Point(px, py);
+    };
 
-        double dataRangeX = maxX - minX;
-        double dataRangeY = maxY - minY;
+    leftPixelPoints.push_back(map_to_pixel(fromPoint));
+    rightPixelPoints.push_back(map_to_pixel(fromPoint));
 
-        // Extend range slightly to handle single point or collinear points and prevents division by zero
-        if (dataRangeX == 0) {
-            minX -= 1.0;
-            maxX += 1.0;
-            dataRangeX = 2.0;
+    for(const auto& g : gateways) {
+        leftPixelPoints.push_back(map_to_pixel(g.first));
+        rightPixelPoints.push_back(map_to_pixel(g.second));
+    }
+
+    leftPixelPoints.push_back(map_to_pixel(toPoint));
+    rightPixelPoints.push_back(map_to_pixel(toPoint));
+
+    // Create a base image with all points and gateways drawn
+    for (size_t i = 0; i < leftPixelPoints.size(); ++i) {
+        if (i > 0 && i < leftPixelPoints.size() - 1) { // Don't draw lines for FROM/TO
+             cv::line(image, leftPixelPoints[i], rightPixelPoints[i], cv::Scalar(255, 0, 0), 2); // Blue gateways
         }
-        if (dataRangeY == 0) {
-            minY -= 1.0;
-            maxY += 1.0;
-            dataRangeY = 2.0;
-        }
+        cv::circle(image, leftPixelPoints[i], 5, cv::Scalar(0, 0, 255), -1); // Red circles
+        cv::circle(image, rightPixelPoints[i], 5, cv::Scalar(0, 0, 255), -1); // Red circles
+    }
 
-        // 2. Image Plotting
-        int border = 30;
-        int imgWidth = image.cols;
-        int imgHeight = image.rows;
+    // --- Funnel Algorithm with Visualization ---
+    std::vector<cv::Point> path;
+    if (leftPixelPoints.empty()) {
+        std::cerr << "No points to process for pathfinding." << std::endl;
+        finishGEOS();
+        return 1;
+    }
 
-        int plotAreaLeft = border;
-        int plotAreaRight = imgWidth - border;
-        int plotAreaTop = border;
-        int plotAreaBottom = imgHeight - border;
+    path.push_back(leftPixelPoints.front());
+    int apex_idx = 0;
+    int left_idx = 1;
+    int right_idx = 1;
+    int n = leftPixelPoints.size();
 
-        int plotWidth = plotAreaRight - plotAreaLeft;
-        int plotHeight = plotAreaBottom - plotAreaTop;
+    while (apex_idx < n - 1) {
+        cv::Point apex_point = path.back();
 
-        // Ensure plot dimensions are positive
-        if (plotWidth <= 0 || plotHeight <= 0) {
-            std::cerr << "Error: Image dimensions too small for border. Cannot plot points." << std::endl;
-            cv::putText(image, "Image too small for plotting!", cv::Point(100, 200), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
-        } else {
-            // 3. Calculate Scaling Factor (uniform scale to maintain aspect ratio)
-            double scaleX = static_cast<double>(plotWidth) / dataRangeX;
-            double scaleY = static_cast<double>(plotHeight) / dataRangeY;
-            double scale = std::min(scaleX, scaleY);
+        // Find the starting indices for the tentacles from the current apex
+        left_idx = apex_idx + 1;
+        right_idx = apex_idx + 1;
 
-            double scaledDataWidth = dataRangeX * scale;
-            double scaledDataHeight = dataRangeY * scale;
-
-            double offsetX = plotAreaLeft + (plotWidth - scaledDataWidth) / 2.0;
-            double offsetY_top_aligned = plotAreaTop + (plotHeight - scaledDataHeight) / 2.0;
-
-            // Store Left and Right chains pixel coordinates for efficiency 
-            std::vector<cv::Point> leftPixelPoints;
-            std::vector<cv::Point> rightPixelPoints;
-
-            // 5. Plot each point (circles and labels)
-            int pointCnt = 0;
-            for (const auto& point : dataPoints) {
-                // Map data to pixel coordinates
-                int pixelX = static_cast<int>(offsetX + (point.x - minX) * scale);
-                int pixelY = static_cast<int>(offsetY_top_aligned + scaledDataHeight - (point.y - minY) * scale);
-
-                assert(pixelX >= 0 && pixelX < imgWidth && pixelY >= 0 && pixelY < imgHeight && "Calculated pixel coordinates are out of image bounds!");
-                
-                cv::Point currentPixelPoint(pixelX, pixelY); // Create cv::Point
-
-                // Draw point with labels
-                cv::circle(image, currentPixelPoint, 5, cv::Scalar(0, 0, 255), -1); // Red circle
-                std::string pointLabel = point.label;
-                std::ostringstream coordsOss;
-                coordsOss << std::fixed << std::setprecision(2) << "(" << point.x << ", " << point.y << ")";
-                std::string coordsText = coordsOss.str();
-
-                int fontFace = cv::FONT_HERSHEY_SIMPLEX;
-                double labelFontScale = 0.4;
-                double coordsFontScale = 0.35;
-                int thickness = 1;
-
-                cv::Size labelSize = cv::getTextSize(pointLabel, fontFace, labelFontScale, thickness, 0);
-                cv::Size coordsSize = cv::getTextSize(coordsText, fontFace, coordsFontScale, thickness, 0);
-
-                cv::Point labelPos(currentPixelPoint.x - labelSize.width / 2, currentPixelPoint.y - 10);
-                labelPos.y = std::max(border + labelSize.height, labelPos.y);
-                labelPos.x = std::max(border, labelPos.x);
-                labelPos.x = std::min(imgWidth - border - labelSize.width, labelPos.x);
-                cv::putText(image, pointLabel, labelPos, fontFace, labelFontScale, cv::Scalar(255, 255, 0), thickness);
-
-                cv::Point coordsPos(currentPixelPoint.x - coordsSize.width / 2, currentPixelPoint.y + 20);
-                coordsPos.y = std::min(imgHeight - border, coordsPos.y);
-                coordsPos.x = std::max(border, coordsPos.x);
-                coordsPos.x = std::min(imgWidth - border - coordsSize.width, coordsPos.x);
-                cv::putText(image, coordsText, coordsPos, fontFace, coordsFontScale, cv::Scalar(0, 255, 255), thickness);
-
-                bool isSpecialKeyword = (point.label == "FROM" || point.label == "TO");
-                if (!isSpecialKeyword) {
-                    if (pointCnt % 2 != 0) {
-                        rightPixelPoints.push_back(currentPixelPoint);
-                    } else {
-                        leftPixelPoints.push_back(currentPixelPoint);
-                    }
-                } else {
-                    if (point.label == "FROM") {
-                        leftPixelPoints.insert(leftPixelPoints.begin(), currentPixelPoint);
-                        rightPixelPoints.insert(rightPixelPoints.begin(), currentPixelPoint);
-                    } else if (point.label == "TO") {
-                        leftPixelPoints.push_back(currentPixelPoint);
-                        rightPixelPoints.push_back(currentPixelPoint);
-                    }
-                }
-                pointCnt++;
+        // Iterate through the remaining gateways to update the funnel
+        for (int i = apex_idx + 1; i < n; ++i) {
+            // -- Check Right Side of Funnel --
+            visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Testing Right Tentacle");
+            
+            // If the new right point crosses over the left tentacle, the funnel must tighten.
+            if (cross_product(apex_point, leftPixelPoints[left_idx], rightPixelPoints[i]) <= 0) {
+                 // The new apex is the tip of the left tentacle, just before the crossover.
+                 apex_point = leftPixelPoints[left_idx];
+                 path.push_back(apex_point);
+                 
+                 // Find the index of our new apex.
+                 auto it = std::find(leftPixelPoints.begin(), leftPixelPoints.end(), apex_point);
+                 apex_idx = std::distance(leftPixelPoints.begin(), it);
+                 
+                 visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Right would cross left! New apex on left.");
+                 break; // Restart the main loop
+            } else if (cross_product(apex_point, rightPixelPoints[right_idx], rightPixelPoints[i]) <= 0) {
+                right_idx = i; // Update the right tentacle tip if the new point is collinear or to the right
+                visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Right Tentacle Update");
             }
 
-            // 6. Connect gateways with blue lines
-            size_t numPairsToConnect = std::min(leftPixelPoints.size(), rightPixelPoints.size());
+            // -- Check Left Side of Funnel --
+            visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Testing Left Tentacle");
 
-            for (size_t i = 0; i < numPairsToConnect; ++i) {
-                cv::Point p1 = leftPixelPoints[i];
-                cv::Point p2 = rightPixelPoints[i];
-                cv::line(image, p1, p2, cv::Scalar(255, 0, 0), 2);
+            // If the new left point crosses over the right tentacle, the funnel must tighten.
+            if (cross_product(apex_point, rightPixelPoints[right_idx], leftPixelPoints[i]) >= 0) {
+                // The new apex is the tip of the right tentacle,
+                apex_point = rightPixelPoints[right_idx];
+                path.push_back(apex_point); 
+
+                // Find the index of our new apex.
+                auto it = std::find(rightPixelPoints.begin(), rightPixelPoints.end(), apex_point);
+                apex_idx = std::distance(rightPixelPoints.begin(), it); 
+                visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Left would cross right! New apex on right.");
+                break; // Restart the main loop
+            } else if (cross_product(apex_point, leftPixelPoints[left_idx], leftPixelPoints[i]) >= 0) {
+                left_idx = i; // Update the left tentacle
+                visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Left Tentacle Update");
             }
-
-            // 7. Calculates the shortest path using the Funnel Algorithm
-            std::vector<cv::Point> path;
-            path.push_back(leftPixelPoints.front());
-
-            int apex_idx = 0;
-            int n = leftPixelPoints.size();
-
-            int cnt = 0;
-            while (apex_idx < n - 1) {
-                cnt++;
-                if (cnt > 100) {
-                        apex_idx = n - 1;
-                }
-
-                cv::Point apex = path.back();
-
-                int current_left_idx = apex_idx + 1;
-                int current_right_idx = apex_idx + 1;
-
-                std::cout << "\n--- Apex Update ---" << std::endl;
-                std::cout << "Apex " << apex_idx << ": " << apex.x << ", " << apex.y << std::endl;
-                std::cout << "Left & Right Tentacle Index: " << current_left_idx << ", " << current_right_idx << std::endl;
-
-                for (int i = apex_idx + 2; i < n; ++i) {
-                    // If the new point creates a 'left turn' or is straight, update the tentacle
-                    int crossProductRight = cross_product(apex, rightPixelPoints[current_right_idx], rightPixelPoints[i]);
-                    std::cout << "Cross Product Right: " << crossProductRight << std::endl;
-                    if (crossProductRight <= 0) {
-                        std::cout << "      Right Turns Left:" << std::endl;
-                        int crossProductRightWithLeft = cross_product(apex, leftPixelPoints[current_left_idx], rightPixelPoints[i]);
-                        std::cout << "Cross Product Right With Left: " << crossProductRightWithLeft << std::endl;
-                        if (crossProductRightWithLeft <= 0) {
-                            std::cout << "      Right Crosses Left! " << std::endl;
-                            path.push_back(leftPixelPoints[i-1]);
-                            apex = leftPixelPoints[i-1];
-                            apex_idx = i - 1;
-                            break;
-                        } else {
-                            std::cout << "      Right Moves In... " << std::endl;
-                            current_right_idx = i;
-                        }
-                    }
-
-                    // If the new point creates a 'right turn' or is straight, update the tentacle
-                    int crossProductLeft = cross_product(apex, leftPixelPoints[current_left_idx], leftPixelPoints[i]);
-                    std::cout << "Cross Product Left: " << crossProductLeft << std::endl;
-                    if (crossProductLeft >= 0) {
-                        std::cout << "      Left Turns Right:" << std::endl;
-                        int crossProductLeftWithRight = cross_product(apex, rightPixelPoints[current_right_idx], leftPixelPoints[i]);
-                        std::cout << "Cross Product Left With Right: " << crossProductLeftWithRight << std::endl;
-                        if (crossProductLeftWithRight >= 0) {
-                            std::cout << "      Left Crosses Right! " << std::endl;
-                            path.push_back(rightPixelPoints[i-1]);
-                            apex = rightPixelPoints[i-1];
-                            apex_idx = i - 1;
-                            break;
-                        } else {
-                            std::cout << "      Left Moves In... " << std::endl;
-                            current_left_idx = i;
-                        }
-                    }
-
-                    if (i == n - 1) {
-                        apex_idx = n - 1;
-                    }
-                }
+            
+            // If we have checked all points without finding a new apex, the path is straight to the end.
+            if (i == n - 1) {
+                apex_idx = n - 1; 
             }
-            // The last point should always be the end point
-            if (path.back().x != leftPixelPoints.back().x || path.back().y != leftPixelPoints.back().y) {
-                path.push_back(leftPixelPoints.back());
-            }
-
-            std::cout << "\n--- Shortest Path ---" << std::endl;
-            for (const auto& point : path) {
-                std::cout << "X: " << point.x << ", Y: " << point.y << std::endl;
-            }
-            std::cout << "------------------------" << std::endl;
         }
     }
 
-    cv::imwrite("setup_test.png", image);
-    std::cout << "Generated a test image: 'setup_test.png' with plotted points." << std::endl;
+    // Add the final destination point if it's not already the last point in the path.
+    if (path.back().x != leftPixelPoints.back().x || path.back().y != leftPixelPoints.back().y) {
+        path.push_back(leftPixelPoints.back());
+    }
 
-    // Clean up GEOS at the VERY END of the program
+    // --- Final Drawing ---
+    std::cout << "\n--- Shortest Path Found ---" << std::endl;
+    for (size_t i = 0; i < path.size() - 1; ++i) {
+        std::cout << "Segment " << i << ": (" << path[i].x << ", " << path[i].y << ") -> (" << path[i+1].x << ", " << path[i+1].y << ")" << std::endl;
+        cv::line(image, path[i], path[i+1], cv::Scalar(0, 255, 0), 2, cv::LINE_AA); // Draw final path in green
+    }
+    std::cout << "--------------------------" << std::endl;
+
+    cv::imshow("Final Shortest Path", image);
+    cv::waitKey(0); // Wait indefinitely for a key press
+
+    cv::imwrite("shortest_path_result.png", image);
+    std::cout << "Generated a final image: 'shortest_path_result.png'" << std::endl;
+
     finishGEOS();
-
     return 0;
 }
