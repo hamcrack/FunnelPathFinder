@@ -20,6 +20,12 @@ endif()
 # Define our executable.
 add_executable(pathfinder src/main.cpp)
 
+# Add the include directory
+target_include_directories(pathfinder
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include # Assumes json.hpp is in ./include
+)
+
 # Link our executable against the libraries we found.
 target_link_libraries(pathfinder
     PRIVATE
