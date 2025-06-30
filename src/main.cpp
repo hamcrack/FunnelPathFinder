@@ -28,6 +28,9 @@ void from_json(const json& j, DataPoint& p) {
     j.at("y").get_to(p.y);
 }
 
+double cross_product(const cv::Point& p1, const cv::Point& p2, const cv::Point& p3) {
+    return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+}
 
 int main() {
     std::cout << "Initializing project..." << std::endl;
@@ -141,9 +144,9 @@ int main() {
             double offsetX = plotAreaLeft + (plotWidth - scaledDataWidth) / 2.0;
             double offsetY_top_aligned = plotAreaTop + (plotHeight - scaledDataHeight) / 2.0;
 
-            // Store calculated pixel coordinates for efficiency
-            std::vector<cv::Point> leftLetterPixelPoints;
-            std::vector<cv::Point> rightLetterPixelPoints;
+            // Store Left and Right chains pixel coordinates for efficiency 
+            std::vector<cv::Point> leftPixelPoints;
+            std::vector<cv::Point> rightPixelPoints;
 
             // 5. Plot each point (circles and labels)
             int pointCnt = 0;
@@ -186,22 +189,108 @@ int main() {
                 bool isSpecialKeyword = (point.label == "FROM" || point.label == "TO");
                 if (!isSpecialKeyword) {
                     if (pointCnt % 2 != 0) {
-                        rightLetterPixelPoints.push_back(currentPixelPoint);
+                        rightPixelPoints.push_back(currentPixelPoint);
                     } else {
-                        leftLetterPixelPoints.push_back(currentPixelPoint);
+                        leftPixelPoints.push_back(currentPixelPoint);
+                    }
+                } else {
+                    if (point.label == "FROM") {
+                        leftPixelPoints.insert(leftPixelPoints.begin(), currentPixelPoint);
+                        rightPixelPoints.insert(rightPixelPoints.begin(), currentPixelPoint);
+                    } else if (point.label == "TO") {
+                        leftPixelPoints.push_back(currentPixelPoint);
+                        rightPixelPoints.push_back(currentPixelPoint);
                     }
                 }
                 pointCnt++;
             }
 
             // 6. Connect gateways with blue lines
-            size_t numPairsToConnect = std::min(leftLetterPixelPoints.size(), rightLetterPixelPoints.size());
+            size_t numPairsToConnect = std::min(leftPixelPoints.size(), rightPixelPoints.size());
 
             for (size_t i = 0; i < numPairsToConnect; ++i) {
-                cv::Point p1 = leftLetterPixelPoints[i];
-                cv::Point p2 = rightLetterPixelPoints[i];
+                cv::Point p1 = leftPixelPoints[i];
+                cv::Point p2 = rightPixelPoints[i];
                 cv::line(image, p1, p2, cv::Scalar(255, 0, 0), 2);
             }
+
+            // 7. Calculates the shortest path using the Funnel Algorithm
+            std::vector<cv::Point> path;
+            path.push_back(leftPixelPoints.front());
+
+            int apex_idx = 0;
+            int n = leftPixelPoints.size();
+
+            int cnt = 0;
+            while (apex_idx < n - 1) {
+                cnt++;
+                if (cnt > 100) {
+                        apex_idx = n - 1;
+                }
+
+                cv::Point apex = path.back();
+
+                int current_left_idx = apex_idx + 1;
+                int current_right_idx = apex_idx + 1;
+
+                std::cout << "\n--- Apex Update ---" << std::endl;
+                std::cout << "Apex " << apex_idx << ": " << apex.x << ", " << apex.y << std::endl;
+                std::cout << "Left & Right Tentacle Index: " << current_left_idx << ", " << current_right_idx << std::endl;
+
+                for (int i = apex_idx + 2; i < n; ++i) {
+                    // If the new point creates a 'left turn' or is straight, update the tentacle
+                    int crossProductRight = cross_product(apex, rightPixelPoints[current_right_idx], rightPixelPoints[i]);
+                    std::cout << "Cross Product Right: " << crossProductRight << std::endl;
+                    if (crossProductRight <= 0) {
+                        std::cout << "      Right Turns Left:" << std::endl;
+                        int crossProductRightWithLeft = cross_product(apex, leftPixelPoints[current_left_idx], rightPixelPoints[i]);
+                        std::cout << "Cross Product Right With Left: " << crossProductRightWithLeft << std::endl;
+                        if (crossProductRightWithLeft <= 0) {
+                            std::cout << "      Right Crosses Left! " << std::endl;
+                            path.push_back(leftPixelPoints[i-1]);
+                            apex = leftPixelPoints[i-1];
+                            apex_idx = i - 1;
+                            break;
+                        } else {
+                            std::cout << "      Right Moves In... " << std::endl;
+                            current_right_idx = i;
+                        }
+                    }
+
+                    // If the new point creates a 'right turn' or is straight, update the tentacle
+                    int crossProductLeft = cross_product(apex, leftPixelPoints[current_left_idx], leftPixelPoints[i]);
+                    std::cout << "Cross Product Left: " << crossProductLeft << std::endl;
+                    if (crossProductLeft >= 0) {
+                        std::cout << "      Left Turns Right:" << std::endl;
+                        int crossProductLeftWithRight = cross_product(apex, rightPixelPoints[current_right_idx], leftPixelPoints[i]);
+                        std::cout << "Cross Product Left With Right: " << crossProductLeftWithRight << std::endl;
+                        if (crossProductLeftWithRight >= 0) {
+                            std::cout << "      Left Crosses Right! " << std::endl;
+                            path.push_back(rightPixelPoints[i-1]);
+                            apex = rightPixelPoints[i-1];
+                            apex_idx = i - 1;
+                            break;
+                        } else {
+                            std::cout << "      Left Moves In... " << std::endl;
+                            current_left_idx = i;
+                        }
+                    }
+
+                    if (i == n - 1) {
+                        apex_idx = n - 1;
+                    }
+                }
+            }
+            // The last point should always be the end point
+            if (path.back().x != leftPixelPoints.back().x || path.back().y != leftPixelPoints.back().y) {
+                path.push_back(leftPixelPoints.back());
+            }
+
+            std::cout << "\n--- Shortest Path ---" << std::endl;
+            for (const auto& point : path) {
+                std::cout << "X: " << point.x << ", Y: " << point.y << std::endl;
+            }
+            std::cout << "------------------------" << std::endl;
         }
     }
 
