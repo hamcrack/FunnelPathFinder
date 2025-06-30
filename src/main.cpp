@@ -16,6 +16,8 @@
 #include "json.hpp"
 using json = nlohmann::json;
 
+std::string jsonFilePath = "../data.json";
+std::string imageFilename = "shortest_path_result.png";
 std::string videoFilename = "funnel_visualization.avi";
 
 // Define a structure to hold the data point
@@ -84,7 +86,6 @@ int main() {
     std::cout << "\nSuccessfully linked GEOS and OpenCV!" << std::endl;
     
     // --- JSON Reading Section ---
-    std::string jsonFilePath = "../data.json";
     std::ifstream inputFile(jsonFilePath);
 
     if (!inputFile.is_open()) {
@@ -226,8 +227,8 @@ int main() {
         cv::Point apex_point = path.back();
 
         // Find the starting indices for the tentacles from the current apex
-        left_idx = apex_idx + 1;
-        right_idx = apex_idx + 1;
+        // left_idx = apex_idx + 1;
+        // right_idx = apex_idx + 1;
 
         // Iterate through the remaining gateways to update the funnel
         for (int i = apex_idx + 1; i < n; ++i) {
@@ -293,7 +294,7 @@ int main() {
     cv::imshow("Final Shortest Path", image);
     cv::waitKey(0); // Wait indefinitely for a key press
 
-    cv::imwrite("shortest_path_result.png", image);
+    cv::imwrite(imageFilename, image);
     std::cout << "Generated a final image: 'shortest_path_result.png'" << std::endl;
 
     videoWriter.release();
