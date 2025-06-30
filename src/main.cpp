@@ -10,6 +10,8 @@
 
 #include <opencv2/opencv.hpp>
 #include <geos_c.h>
+#include <geos/geom/Coordinate.h>
+#include <geos/algorithm/Orientation.h>
 
 #include "json.hpp"
 using json = nlohmann::json;
@@ -28,8 +30,14 @@ void from_json(const json& j, DataPoint& p) {
     j.at("y").get_to(p.y);
 }
 
-double cross_product(const cv::Point& p1, const cv::Point& p2, const cv::Point& p3) {
-    return (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+int geos_orientation(const cv::Point& p1, const cv::Point& p2, const cv::Point& p3) {
+    // Convert cv::Point to GEOS's Coordinate type
+    geos::geom::Coordinate c1(p1.x, p1.y);
+    geos::geom::Coordinate c2(p2.x, p2.y);
+    geos::geom::Coordinate c3(p3.x, p3.y);
+
+    // Call the robust, official GEOS algorithm
+    return geos::algorithm::Orientation::index(c1, c2, c3);
 }
 
 void visualize_step(const cv::Mat& baseImage,
@@ -203,7 +211,7 @@ int main() {
             visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Testing Right Tentacle");
             
             // If the new right point crosses over the left tentacle, the funnel must tighten.
-            if (cross_product(apex_point, leftPixelPoints[left_idx], rightPixelPoints[i]) <= 0) {
+            if (geos_orientation(apex_point, leftPixelPoints[left_idx], rightPixelPoints[i]) != 1) { // Not a left turn
                  // The new apex is the tip of the left tentacle, just before the crossover.
                  apex_point = leftPixelPoints[left_idx];
                  path.push_back(apex_point);
@@ -214,7 +222,7 @@ int main() {
                  
                  visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Right would cross left! New apex on left.");
                  break; // Restart the main loop
-            } else if (cross_product(apex_point, rightPixelPoints[right_idx], rightPixelPoints[i]) <= 0) {
+            } else if (geos_orientation(apex_point, rightPixelPoints[right_idx], rightPixelPoints[i]) != 1) { // Not a left turn
                 right_idx = i; // Update the right tentacle tip if the new point is collinear or to the right
                 visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Right Tentacle Update");
             }
@@ -223,7 +231,7 @@ int main() {
             visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Testing Left Tentacle");
 
             // If the new left point crosses over the right tentacle, the funnel must tighten.
-            if (cross_product(apex_point, rightPixelPoints[right_idx], leftPixelPoints[i]) >= 0) {
+            if (geos_orientation(apex_point, rightPixelPoints[right_idx], leftPixelPoints[i]) != -1) { // Not a right turn
                 // The new apex is the tip of the right tentacle,
                 apex_point = rightPixelPoints[right_idx];
                 path.push_back(apex_point); 
@@ -233,7 +241,7 @@ int main() {
                 apex_idx = std::distance(rightPixelPoints.begin(), it); 
                 visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Left would cross right! New apex on right.");
                 break; // Restart the main loop
-            } else if (cross_product(apex_point, leftPixelPoints[left_idx], leftPixelPoints[i]) >= 0) {
+            } else if (geos_orientation(apex_point, leftPixelPoints[left_idx], leftPixelPoints[i]) != -1) { // Not a right turn
                 left_idx = i; // Update the left tentacle
                 visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Left Tentacle Update");
             }
