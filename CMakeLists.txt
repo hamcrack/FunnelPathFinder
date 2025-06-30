@@ -2,13 +2,13 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Define the project name
-project(FunnelPathfinder)
+project(FunnelPathFinder)
 
-# Set the C++ standard to C++17 (a good modern choice)
+# Set the C++ standard to C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find the OpenCV library.
+# Find the OpenCV library
 find_package(OpenCV REQUIRED)
 
 # --- Updated GEOS Section ---

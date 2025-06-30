@@ -16,6 +16,8 @@
 #include "json.hpp"
 using json = nlohmann::json;
 
+std::string videoFilename = "funnel_visualization.avi";
+
 // Define a structure to hold the data point
 struct DataPoint {
     std::string label;
@@ -23,7 +25,7 @@ struct DataPoint {
     double y;
 };
 
-// Function to deserialize JSON into DataPoint implicitly 
+// Implicit function to deserialize JSON into DataPoint
 void from_json(const json& j, DataPoint& p) {
     j.at("label").get_to(p.label);
     j.at("x").get_to(p.x);
@@ -46,8 +48,9 @@ void visualize_step(const cv::Mat& baseImage,
                     const cv::Point& left_tentacle_tip,
                     const cv::Point& right_tentacle_tip,
                     const cv::Point& point_being_tested,
-                    const std::string& message) {
-
+                    const std::string& message,
+                    cv::VideoWriter* videoWriter = nullptr) 
+{
     cv::Mat frame = baseImage.clone();
 
     // Draw the funnel tentacles
@@ -62,6 +65,10 @@ void visualize_step(const cv::Mat& baseImage,
         cv::line(frame, path[i], path[i+1], cv::Scalar(0, 255, 0), 2, cv::LINE_AA); // Green
     }
     cv::putText(frame, message, cv::Point(10, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+
+    if (videoWriter) {
+        videoWriter->write(frame); // Write frame to video
+    }
 
     cv::imshow("Funnel Algorithm Visualization", frame);
     cv::waitKey(500);
@@ -155,6 +162,10 @@ int main() {
                 gateways.back().second = p;
             }
         }
+        // show lable and coordinates on the image
+        cv::Point pixel(static_cast<int>(offsetX + (p.x - minX) * scale),
+                        static_cast<int>(offsetY + scaledDataHeight - (p.y - minY) * scale) - 10);
+        cv::putText(image, p.label, pixel, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
     }
     
     // Create the left and right chains for the funnel algorithm
@@ -184,6 +195,19 @@ int main() {
         cv::circle(image, rightPixelPoints[i], 5, cv::Scalar(0, 0, 255), -1); // Red circles
     }
 
+    // Init video writer for visualization
+    cv::VideoWriter videoWriter;
+    int fourcc = cv::VideoWriter::fourcc('M','J','P','G');
+    double fps = 2.0; // 2 frames per second, adjust as needed
+    cv::Size frameSize(image.cols, image.rows);
+    videoWriter.open(videoFilename, fourcc, fps, frameSize, true);
+
+    if (!videoWriter.isOpened()) {
+        std::cerr << "Could not open the output video file for write\n";
+        finishGEOS();
+        return 1;
+    }
+
     // --- Funnel Algorithm with Visualization ---
     std::vector<cv::Point> path;
     if (leftPixelPoints.empty()) {
@@ -208,10 +232,10 @@ int main() {
         // Iterate through the remaining gateways to update the funnel
         for (int i = apex_idx + 1; i < n; ++i) {
             // -- Check Right Side of Funnel --
-            visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Testing Right Tentacle");
+            visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Testing Right Tentacle", &videoWriter);
             
             // If the new right point crosses over the left tentacle, the funnel must tighten.
-            if (geos_orientation(apex_point, leftPixelPoints[left_idx], rightPixelPoints[i]) != 1) { // Not a left turn
+            if (geos_orientation(apex_point, leftPixelPoints[left_idx], rightPixelPoints[i]) != 1) {
                  // The new apex is the tip of the left tentacle, just before the crossover.
                  apex_point = leftPixelPoints[left_idx];
                  path.push_back(apex_point);
@@ -220,18 +244,18 @@ int main() {
                  auto it = std::find(leftPixelPoints.begin(), leftPixelPoints.end(), apex_point);
                  apex_idx = std::distance(leftPixelPoints.begin(), it);
                  
-                 visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Right would cross left! New apex on left.");
+                 visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Right would cross left! New apex on left.", &videoWriter);
                  break; // Restart the main loop
-            } else if (geos_orientation(apex_point, rightPixelPoints[right_idx], rightPixelPoints[i]) != 1) { // Not a left turn
+            } else if (geos_orientation(apex_point, rightPixelPoints[right_idx], rightPixelPoints[i]) != 1) {
                 right_idx = i; // Update the right tentacle tip if the new point is collinear or to the right
-                visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Right Tentacle Update");
+                visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], rightPixelPoints[i], "Right Tentacle Update", &videoWriter);
             }
 
             // -- Check Left Side of Funnel --
-            visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Testing Left Tentacle");
+            visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Testing Left Tentacle", &videoWriter);
 
             // If the new left point crosses over the right tentacle, the funnel must tighten.
-            if (geos_orientation(apex_point, rightPixelPoints[right_idx], leftPixelPoints[i]) != -1) { // Not a right turn
+            if (geos_orientation(apex_point, rightPixelPoints[right_idx], leftPixelPoints[i]) != -1) {
                 // The new apex is the tip of the right tentacle,
                 apex_point = rightPixelPoints[right_idx];
                 path.push_back(apex_point); 
@@ -239,11 +263,11 @@ int main() {
                 // Find the index of our new apex.
                 auto it = std::find(rightPixelPoints.begin(), rightPixelPoints.end(), apex_point);
                 apex_idx = std::distance(rightPixelPoints.begin(), it); 
-                visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Left would cross right! New apex on right.");
+                visualize_step(image, path, path[path.size()-2], apex_point, apex_point, apex_point, "Left would cross right! New apex on right.", &videoWriter);
                 break; // Restart the main loop
             } else if (geos_orientation(apex_point, leftPixelPoints[left_idx], leftPixelPoints[i]) != -1) { // Not a right turn
                 left_idx = i; // Update the left tentacle
-                visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Left Tentacle Update");
+                visualize_step(image, path, apex_point, leftPixelPoints[left_idx], rightPixelPoints[right_idx], leftPixelPoints[i], "Left Tentacle Update", &videoWriter);
             }
             
             // If we have checked all points without finding a new apex, the path is straight to the end.
@@ -271,6 +295,9 @@ int main() {
 
     cv::imwrite("shortest_path_result.png", image);
     std::cout << "Generated a final image: 'shortest_path_result.png'" << std::endl;
+
+    videoWriter.release();
+    std::cout << "Saved funnel visualization video: " << videoFilename << std::endl;
 
     finishGEOS();
     return 0;
