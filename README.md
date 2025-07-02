@@ -13,10 +13,12 @@ A C++ implementation of the Funnel Algorithm for shortest-path finding through a
 ## Demo
 
 ![Shortest Path Result](shortest_path_result.png)
+![Shortest Path Result2](shortest_path_result2.png)
 
 The full step-by-step visualization is available in the included video:
 
 [▶️ funnel_visualization.avi](./funnel_visualization.avi)
+[▶️ funnel_visualization2.avi](./funnel_visualization2.avi)
 
 ## Usage
 
@@ -45,3 +47,10 @@ make
 - OpenCV (for visualization and video)
 - GEOS (for geometric orientation)
 - nlohmann/json (for JSON parsing)git 
+
+## Core Funnel Algorith Complexity
+
+- Each portal (edge) is processed once.
+- Each point in left and right is processed in amortized constant time (never revisited).
+- Operations like geos_orientation and state manipulations are all O(1) per element.
+- The total time complexity is O(n) — linear in the number of portal edges.
